@@ -1,0 +1,51 @@
+Synchronisation and Scheduling
+==============================
+Doubts-
+* If cond variables suffer from lost wakeup problem while semaphores do not, why should cond variables ever be used? Do they have a simpler implementation? Are they more efficient? (complex wait conditions, selective wakeups, atomicity b/w condition checks and waits??)
+
+* How to make the readers-writers lock fair?
+
+* See proof of wait-freeness and linearlizability of queue in listing 5.11
+
+* How is busy-wait occuring in listing 5.13?
+
+* Does the OS assume a NUMA architecture? What about cores with different processing speeds?
+
+* What does it mean for some chain to be associated with a deadlock?
+
+* What exactly is cache line bouncing? Why does busy wait involve it?
+
+* Apart from the busy waiting, are there other reasons why reference count method does not scale in concurrent settings?
+
+* What all restrictions do general critical sections impose that RCU does not?
+
+* What is the point of having READ_ONCE macro?
+
+* Did not understand example in listing 5.30.
+
+* In which cases are blocking calls allowed in RCU read mechanism?
+
+* Q5.3.1
+
+* Unable to appreciate the choice of augmented tree data structure for managing rcu_structs.
+-------------
+* Sempahores - 
+
+
+Lockdep mechanism-
+Why have a lock depth? - 
+* If a process obtains more than a certain number of locks, it may get stalled due to resource constraints and not be able to release the locks it has aquired, leading to deadlocks.
+* If there has been a sequence of lock aquire-release operations,now if a process needs to aquire a lock, then the entire chain from some point needs to be validated... - iska kya hua?(48:00)
+
+* Spinlocks, mutexes, reader-writer locks are all verified.
+* The lock is not in one of the 4 states, rather the aquisition.
+* If softirqs are enabled(softirq unsafe) => hardirqs are also enabled(hardirq unsafe).
+
+* Deadlock checking rules are conservative(all checks compile time?).
+
+* Context inconsistency problem - no path can contain (hardirq unsafe, hardirq safe) or (softirq unsafe, softirq safe locks).
+Aquire lock in SU state. Lock A. Some time later, softirq starts running which has higher priority than the process context. This may try to lock A again. This is the other kind of deadlock which does not involve a circular wait.
+
+* Deadlock = circular wait or context inconsistency.
+
+* Need to enforce programmer discipline in relation to context consistency, as the programming language cannot always enforce these checks. Need to design methods which are verified by construction to ensure bug free code.

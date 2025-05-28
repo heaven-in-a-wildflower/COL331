@@ -1,0 +1,329 @@
+Doubts-
+* Give examples of diff workloads where best,worst,next,first fit heurestics perform well.
+
+* Problems with basic pratical lru scheme?
+    - Is periodically setting the access bits of all pages to 0 costly?
+
+* Problems with ws clock algorithm?
+
+* Problems with ws clock second chance?
+
+* Why is access of kernel's data structures to modules becoming more restricted?
+
+* Why can page tables not be stored in virtual memory?
+
+* Why are we even considering virtual addresses in listing 6.2, when page tables are stored in phys mem
+
+* Why do we need to pass double pointers **ptep and **ptlp in follow_pte()?
+
+* Significance of TLB hit rate improving when grouping pages into folios?
+
+* Point 6.2.1
+
+* Use of reserved PCID?
+
+* If kernel switches back to 'same' multithreaded user process, deferred invalidations completed before shifting back from kernel to user mode.Why?
+
+* How is it determined if a thread running on another cpu is affected by the invalidation of a mapping? What about the same thread(do we need to invalidate immediately or can we get time benefit by deferring it?)?
+
+* Is there a need to cache the memory reserved for dma controller?
+
+---------------
+* Phys mem - Memory modules, swap space, parts interacting with dma engines and i/o.
+
+* TLB allows pinning entries, annotate entries with pid, sel flushing entries.
+
+* Base-limit scheme is rarely used since its difficult to predict the mem requirement of a process beforehand, leads to internal and external fragmentation.
+
+* Can use augmented tree to find first free page.
+
+
+Classical Schemes
+
+Stack distance
+* Stack distance = Distance between top of stack and the point where the page was found
+* (Probability of access) vs (stack dist) plot - heavy tailed distr which peeks quickly. Estimated using log normal dist.
+Low values rare since we access data in streams. Heavy tail because programs tend to make a lot of random accesses.
+* Mean stack dist inversely prop to temporal locality.
+
+
+Stack-based page replacement algos
+* The stack here does not follow the traditional LIFO policy but is a stack in the sense that after accessing an item, it is placed on top of the stack.
+
+* Let S_n be set of pages in mem with n frames. Stack property : S_n ⊆ S_(n+1).
+- Suppose the property initially holds, consider mems M_n and M_(n+1)
+- Will cont to hold if evicted page p lies in both or in S_(n+1) but not S_n.
+- Consider the first point at which the property is violated.
+- Must have been due to a miss in S_n. Then p !⊆ S_n. So some q ⊆ S_n is evicted to make space for p. Thus S_n = S_n(old) + p - q. Since S_n !⊆ S_(n+1), there was an eviction in S_(n+1). S_(n+1) = S_(n+1)(old) + p -r for some r, such that r is in S_n but no longer in S_(n+1). Obv, q!=r.
+- Page cost function - F. Higher F => higher probability of eviction. If F is a global property, then stack property will not be violated.
+- M_n chose to evict q over r => F(q) > F(r). M_(n+1) did the opposite, so F(r)>F(q). Thus, F was a local property dependent on mem size.
+
+
+* Optimal page replacement alg:  F = next use time (Indep of memory size).
+* Stack based schemes prevent Belady's anomaly(i.e page faults cannot increase if we increase the size of memory in a stack-based algo).
+* Stack distance is basically LRU.
+
+* Why pure LRU is not practical-
+    - Can't burden every mem access with computing and storing a stamp.
+    - TLB arch will need to be modified.
+    - Need a ds to find page with least timestamp in mem.
+    - Stack needs update on every access, Even pq(O(logn) for finding and updation) is not fast enough
+    - Can store timestamp in page table, but that is not accessed on every mem access.
+Maintiaining LRU needs to be infrequent.
+
+* Practical LRU(basic) - Use page prot bits. First, set access bit for each page to 0, when page is accessed, OS recognizes if the soft page fault was deliberately introduced, sets the bit to 1. Periodically, all acess bits are reset to 0. When sel page to evict, if its access bit is 0 => was not accessed since the last time the bits were reset - coarse criteria for replacement.
+
+* WS clock - Iterate through the pages, with wrap around. If access bit is 1, reset to 0. If bit is 0, choose for eviction, meanwhile pointer waits at that page, later contines from same posn. Works well when swap space acts as lower level cache.
+
+* WS clock second chance -
+⟨Access bit, modified bit⟩
+Init st     New st      Action
+⟨0, 0⟩      ⟨0, 0⟩      Go ahead and replace
+⟨0, 1⟩      ⟨0, 0⟩      Schedule a write-back, move forward.
+⟨1, 0⟩      ⟨0, 0⟩      Move forward
+⟨1, 1⟩      ⟨1, 0⟩      Frequently used frame; move forward, schedule a write-back.
+
+We transitiion from 1,1 to 1,0 => Access bit not set to 0 if it is a freq used page that gets written to i.e deserves second chance. Takes into account the different overheads of reads and writes.
+
+* Stack property not maintained in FIFO queues => leads to Belady's anomaly - decreasing mem size leading to fewer page faults. Eg.(123412512345,memsize=3,4)
+
+* Working set - Set of pages that a program accesses in a short duration of time, repeatedly keeps accessing pages within working set. Taken to be point of sharp page fault reduction in (page fault rate) vs (pages in mem) graph.
+
+* Virt mem map(60 bit)-
+a. User space(64PB)
+b. Directly mapped(32PB) -
+    - phy and virt addresses are same or lin related.
+    - Stores page tables(cannot be stored in virt mem as that would lead to pafe faults during access)
+    - large buffers shared with i/o devices
+c. Mem mapped i/o(12.5PB)
+d. Per cpu area(0.5TB) - stores info related to current task, part of context, preemption-related flags
+e. Kernel code + modules(512 + 1520 MB) - reduce compile time, loaded acc to devices connected.
+PB = 2^50 bytes.
+
+* cr3 reg set to pgd_t* pgd in mm_struct.
+* Hierarchy - PGD -> P4D -> PUD -> PMD -> PTE -> page(12 bit). Others are 9 bit each. total = 57 bits
+    - PTE also stored in TLB.
+    - PTE also protected by a spinlock
+
+* Accessing PTE
+- pud_pgtable gives virt addr of starting addr of PMD
+    - pud_valpud() returns bits of physical address to PMD table.
+    - Take biwise AND with bits 13 to 52(align with page boundary).
+    - Convert this to a virt address using __va()
+
+* struct page
+    - ds for every physical page
+    - metadata = nature of page - state(locked/modified/being written etc),anon?,mem-mapped?,DMA usable?
+    - Uses unions (needs to maintain info only about the current state of page) for lower memory footprint
+    - struct vs union
+        - struct used when multiple fields of an object need to exist simultaneously, union is used when only one is needed at a time)
+    - refcount-number of entities(kernel procs, regular procs, dma controller etc) holding a reference to the page.
+    - refcount needs to be 0 when page sent for recycling.
+
+* folios -
+    - set of pages having contig memory addresses both in virt and phy mem. Reduce translation overhead for i/o devices DMA controllers.
+    - Must be power of 2. Maint metadata at page level granularity has a lot of overhead, thus grouped together.
+    - Singular page from kernel's pov(own permission bits and CoW status[entire folio copied],LRU info, refcount)
+    - high spacial locality
+    - huge pages - hardware feature which makes folios feasible - 21 and 30 bit pages(notice alignment)
+    - reduce pressure on page table and TLB, improves hit rate.
+    - may lead to some degree of internal fragmemtation but plenty of phys memory these days
+
+* pfn is index of physical page in memory
+
+* pfn to struct page -
+    1. Find the section the pfn belongs to(Kernel divides phy mem into sections to handle sparse memory)
+    2. Each section has an array of struct pages. Get the base addr of the array of struct pages for that section.
+    3. Add pfn offset to base addr.
+
+* TLB features-
+    - Lies on critical path of address translation
+    - Gen arch: i-tlb,d-tlb,l2-tlb
+    - each entry stores phys page number(mapped to by a virt page number)
+    - Flushing TLB is expensive for both new and old procs(if a context switched out process is brought back)
+
+* TLB optims-
+    - Mark some entries as global(not flushed with user level proc pages)
+    - invlpg instruction selectively invalidates tlb entries
+    - Kernel and user page table entries differ in msb - use this to selctively flush entries(kernel part of page table is common across procs)
+    - Annotating tlb entry with pid breaks abstraction.
+    - Arch provides PCIDs(Processor Context IDs), linux provides ASIDs(arch indep) (Address Space IDs)
+    - Top 12 bits of cr3 reg store current PCID
+    - In case of intel x86-64, the two co-incide(ASID mapped one-to-one with PCID). 6 are suff for perf(support for upto 2^12 - 1)
+    - INVPCID invalidates all entries in TLB with given PCID
+
+* Lazy TLB mode-
+    - For multithreaded procs(running on mutiple cores), IPIs needed to update TLB of other cores. This may interrupt high prio tasks.
+    - If a proc running on a core is not affected by the invalid of a mapping, it need not invalidate it immed.
+    - Kernel accessing invalid user-level page should not be allowed. This is checked at entry point funcs to user level pages such as copy_from_user and copy_to_user.
+    - Shared memory comm also happens through sim check points
+    - If kernel swicthes to another user proc, the ASID/PCID of curr task is changed.
+    - If kernel switches back to 'same multithreaded' user process, deferred invalidations completed before shifting back from kernel to user mode(since this process may actualy have to access those entries).
+
+* Partitioning Physical Memory(from software pov)
+    - Kernel does not treat all physical memory as a flat space
+    - Can have different types of mem - DRAM, flash, NVM etc with diff latency, throughput, power consump.
+
+* Zones
+    - Each partition called a zone
+    - Zone types
+        ZONE_DMA - this data is not cached to reduce invalidations and writebacks
+        ZONE_NORMAL - for reg kernel and user processes
+        ZONE_HIGHMEM - when virt mem < phys mem - irrelevant
+        ZONE_MOVABLE - continuity in phys addr for better prefetching across applications, useful for huge pages
+        NVM is b/w DRAM and hard disk in perf, can double up as storage device
+        ZONE_DEVICE - Non volatile mem - can be removed anytime without prior notice => no copies of pages stored here should exist in DRAM, caching not allowed, assume that device hosting the page will manage.
+    - Zones may be non-contig, may have intra-zone heterogenity
+    - So divide them into sections which are contig
+    - Each zone assoc with a numa node (pglist_data structure)
+    - present pages(actual) vs spanned pages(b/w start and end) vs managed pages(actively managed)
+
+* NUMA node
+    - May have multiple zones but atmost one of each type.
+    - node_zonelists contain refs to zones in all nodes(global info)
+    - first zone in each list belongs to curr node.
+    - kswapd - daemon(low prio bg process) that finds infreq used pages and migrates them to swap space
+    - __lruvec - to find less used pages
+
+* Reverse Mapping
+    - If a phys page is moved or swapped out, need to update virtual pages that mapped to it
+    - Lot of page sharing due to CoW mech
+    - vma :
+        - contig region of mem, stored in maple tree
+        - page sharing b/w procs occurs at vma granularity
+        - 2 types - anon(stack,heap) and file-backed
+    - Rev mapping is easy for file backed pages - maint a tree of vmas that mapped to bytes in a file. Given phys addr, map it to a file offset, then get the vmas that mapped to it.
+
+* Rev Mapping for anon vmas
+    - Mapping problem - For every page, need a linked list of virt pages
+    - Policy problem - Should be easy to set common policy for pages
+
+    - Sol1 : Maint linked list of procs in each struct page
+        !! Since no limit on no. of procs that can map to a page. Wastes a lot of space in repetition since a set of pages may be shared across the same set of processes(eg. shared libraries)
+
+    - Sol2 : Add ptr to vma in each struct page - easy to set common policy
+        !! vmas split and merge very freq(changing access permission, making huge pages from pages etc), can get copied due to fork
+
+    - Sol3 : Virtualisation
+
+* Anon_vmas
+    - Each phys page points to an anon_vma(dummy stub), via mapping field in struct page
+    - Each anon_vma assoc with a set of vmas(new vma assoc with same anon_vma created during fork)
+    (many to one)
+        Adv. of indirection - no page had to change mapping, only change links b/w vmas and anon_vmas, since n_vmas<<n_pages, this is much faster
+    - On CoW, new anon_vma assoc with same vma created, new page pointing to new anon_vma(one to many)
+    - Thus many to many links b/w vmas and anon_vmas
+    - An array of ptrs to vmas for each anon_vma and
+      an array of ptrs to anon_vmas for each vma
+      cause scalabiltiy problems(difficulty in concurrent updates to vmas). Thus, enter anon_vma_chain.
+
+*  struct anon_vma
+    - ptr to root
+    - ptr to parent
+    - ptr to root of rb tree of anon_vmas
+
+* struct anon_vma_chain
+    - ptr to vma
+    - ptr to anon_vma
+    - ptr to other avc in dll corresp to same vma
+    - ptr to node in rb tree
+
+* avc chain links all anon_vmas(an anon_vma for each ancestor if the ancestor created new pages one for given process if it created new pages) to given vma.
+
+* Given an anon_vma, how to quickly find all vmas having a mapping to any page that points to it(across procs)?
+1. We first locate the vma that may contain a mapping to the physical page.
+    - every physical page points to a single anon vma
+    - every anon_vma points to root of rb_tree of avc nodes
+    - use rb_tree to quickly find all vmas that map to the page
+- When a proc forks, for the child proc, a new avc node is created to point to anon_vma of parent. rb_tree of parent conts two avc nodes - one for parent, one for child. anon_vma of child(gen on CoW) will point to anon_vma of parent.
+
+2. Find the virtual page within the vma that is mapped to the given physical page.
+    - The first time a phys page is allocated, if vma conts n pages, let ith page be mapped - call it index, stored in struct page. Then v.addr = v.start_addr + i<<12
+
+MGLRU algorithm
+- Uses slow path, fast path
+- Features:
+    - Divide pages into generations based on recency of access
+    - Reclaims pages in bg using kswapd
+    - ages the pages
+    - runs well with folios
+Idea :
+- Page promoted to higher gen when accessed.
+- Once all pages of oldest gen are evicted, seq no. can be incremented.
+
+- struct lruvec : ptr to NUMA node, no. of refaults(page access after it was evicted), LRU state
+
+- struct lru_gen_struct : max seq no., min seq no.s (diff for anon, file-backed), timestamps, 3d list
+    - Link all pages of same gen in a 3d linked list indexed by generation no. type of page and zone no.
+
+- struct lru_gen_mm_state :
+    - no. of page walkers
+    - head/tail of ll - consec mm_structs
+    - array of bloom filters - speed up pagewalk
+- page access tracking by fake page fault meachanism, periodically set all access bits to 60
+
+* Red memory footprint :
+    - kswapd - passive
+    - active call to evict_folios
+    - Page reclamation by kernel without eviction - freeing pages from buffers, file mappings
+
+* Aging process
+    - Incr max_seq autom. ages all pages by one generation
+    - maintain a min and max number of generations of approp granularity of info
+    - The aim is to maintain min seq + min_gens == max seq, i.e want min_gens + 1 seq no.s
+    - A page is said to be young gen if seq = max_seq and old gen if seq + min_gens = max seq.
+    - if too many young gens, need to run paging
+    - if the number of old gen pages is lower than what is expected, then also we need to age
+
+* Accelerate paging
+    - mark entire pmd as unaccessed using bloom filters
+    - bloom filter stores pmd addresses
+    - if pmd address found in bloom filter => mp contains young pages, otherwise false positive
+    - if pmd address not found => def contains old pages
+    - For the rest of the young pages, we clear the accessed bit and set the generation of the page or folio to max seq
+
+* Eviction algo -
+    - Input : lruvec, swappiness
+    - swappiness close to 1 => evict file backed pages, close to 200 => evict anon pages (default=0)
+    - Logic 1: for anon page, need to alloc a page in swap space and write to it on eviction, file-backed page already present in storage.
+    - Logic 2: anon pages often cont inavlid data , while file backed pages are often code pages used by the program.
+    - If anonymous pages have a lower gen, outright evicted. If file-backed pages have a lower gen we don’t evict them outright. We are slightly biased towards them.
+    - evicting anon pages when I/O opers are underway can cause correctness, evict file backed pages instead.
+
+* Finding type of page to evict
+    - input : n_pagefaults, n_refaults, gain
+    - sp(set point) and pv(process variable). Want to set pv = sp
+    - gain sets aggressiveness of sys
+    - for anon pages, gain = swappiness, for file-backed 200-swappiness
+    - Refault rate/gain = mean refault rate acheived per unit effort - want it to be equal for anon and file backed pages
+    - (#ref aults)/(#evictions) = norm refault rate
+    - f = (norm refault rate)/gain, let 1=file-backed, 2=anaon
+    - if f1<f2, can evict some type 1 pages
+    - If the absolute value of the file < 64, evict file-backed pages. mp the application either does not access a file or the file accessed is very small. But, every app shall have a large amount of anon memory comprising stack and heap sections. Even if it is a small appl, the code to initialize it is sizable. Hence, evict anon pages only if the file refault rate is above a certain threshold.
+
+* Tiers so that not all folios are evicted(some may have been accessed a lot in past)
+- The tier is set to log(refs+1), refs counted using soft page faults
+- low tier => less ref, higher tier => more ref
+- We compare the norm refault rate of all the tiers of T with tier 0 of T ′
+-  in tiers [0, k] of type T should be considered for eviction
+-  in tiers k + 1 and beyond, should be given a second chance
+- Once a folio is promoted to a new generation, we can clear its reference count.
+- Let it not benefit once again. Let it start afresh after getting promoted to the higher
+generation
+
+* Eviction of folio
+- not a one-shot process, some may be in use
+- If one folio was found to be old, then punish nearby pages
+- not on crit path , do bookkeeping
+
+* Looking around
+- kswapd ages only young pages, skips old ones
+- Speed up using bloom filter
+
+* Thrashing
+- Loading files from disk is slow
+- If multiple appls, bandwidth decreases => get slowed down
+- If WS is large(close to main mem size), they begin to evict each other's crucial pages => vicious cycle, apps stall
+- The scheduler may sense that the CPU load is low and further schedule more procs causing more problem.
+- Linux sol. - page brought in not evicted easily, do not allow page to be evicted if it was brought in in last 1sec.
+- If a process waits in runq for long enough, kill it => OOM erro, limits no. of procs

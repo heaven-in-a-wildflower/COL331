@@ -1,0 +1,305 @@
+Process Descriptor - struct task_struct, kernel stack, virt mem & metadata, pids and namespaces
+Process Creation and Destruction - fork(),clone(),exec family of calls,threads
+Context switching-Hardware context, type of context switches, details
+
+Problems with using hash tables in kernel-
+* We are not sure of the number of keys we may need to store
+* Range query not easily implemented
+* Poor cache locality(??)
+
+Advantages of tree
+* Support concurrent accesses
+* High cache locality(??) - node size = cache line size in m-ary B-trees, also helps in node-level locking.
+* Internal nodes close to root have smaller branching factor than those at higher depths to impr perf(??)-
+    a. Nodes at higher levels are accessed more frequently, so they should be small enough to fit in cache line.
+    b. CPU branch predictors work best with low branching factors, improving pipeline efficiency.
+* Since modern machines can store bits at 32 or 64-bit granularity, need to design tree node acc. Store status of children in parent node to reduce accesses.
+
+Process notion
+* Middleware processes run at ring levels 1 and 2.
+* Thread shares memory state except stack, register state and tls with other threads. It is an indep schedulable entity.
+
+struct thread_info
+* a low-level ds is either a primitive data type or a c struct that is hardware aware.
+* Define all machine specific code in arch dir - so that same kernel code can be run on multiple machines.
+* Fields
+    ulong flags - if thread is in kernel mode, if thread is being exec etc, debug mode, single step etc
+    ulong syscall_work - bits indicate what extra work is to be done when handling sysca;;
+    u32 status - current state of thread - sleeping,running or stopped.
+    u32 cpu - if of cpu it is running or sched to run on
+
+Task states
+* bimorph of TASK_RUNNING allows us to use the same task queue for both such tasks, reduces task state updates, spec when process is switched out
+* SIGSTOP syscall = kill command(high priority), can be resumed with SIGCONT
+* SIGSTP = ctrl+z(can be ignored)
+* In TASK_INTERRUTIBLE state, the process can respond to signals by OS, is sent here if expected to be paused for a long time, such as after i/o request. ctrl + c is a signal and can kill such a process.
+* In UNINTERRUPTIBLE, it has to be expl woken up. writing syscalls easier in this case
+* Interrupt handler defined in kernel space, signal handler in user space
+* Cannot kill proc in kernel mode as that may corrupt data
+
+Zombie tasks
+* Child task moved to zombie state using exit syscall. Parent is then informed about this via SIGCHLD syscall. Parent calls wait() to read the exit status of child. exit status=0 => all good, 1=>error. After parent has read child's status, child's resources can be deallocated.
+
+Kernel stack
+* Each thread has a kernel mode. When thread makes a syscall, switch to this mode instead of spawning new thread. Strict limit on size of kernel stack=8KB. laid in memory so as to make overlap impossible. Kernel stack contains useful info when process is running or is in zombie state.
+
+* Kernel stack includes some cpu specific stacks used to run IHs. Each IH needs its own stack to execute. 7 stacks provided to support nested interrupts.
+
+**The main aim is to quickly fetch the task_struct of current task.(each thread within a process has a separate task_struct). Very time critical and frequent oper.
+* Problem : Given esp, how to find bottom of kernel stack assuming allignment to 8KB boundaries?
+
+* task_struct may be large - 2-3 KB, thus not stored in kernel stack
+
+* thread_info stored at bottom of kernel stack. Zero out bottom 13 bits of esp to get addr of thread info
+
+* Complete process doable in 2 instructions in older kernels, improved to 1 instruction in modern kernels. the structures are laid out in memory plays a critical role in performance.
+
+Old -
+and $MASK, %rax   # Mask to get base of thread_info
+mov TASK_OFFSET(%rax), %rax  # Read task_struct pointer from thread_info
+
+New -
+gs register directly stores a pointer to the beginning of the dedicated
+storage region, and the offset of the task struct from that region is known
+mov %gs:offset, %rax
+
+* Not feasible to store this member in a privileged/model spec reg(not portable) or a specific mem address(limits flexib in using VA space)
+
+* Need to ensure that per-cpu regions are aligned to cache boundaries.
+
+* We do not want the same mech to transition to kernel mode in case of interrupts as with syscalls because-
+    a. An interrupt needs to be more securely handled, warrants having a separate mem region
+    b. Sometimes, we may need more than 8KB
+    c. Nested interrupts require storing the current context and switching to new stack.(??)
+
+Task prios
+* See fig 3.4 pg 76
+* Not advisable to have many real time tasks(pre prio>60) as they monopolose cpu resources and block imp os level tasks.
+* MAX_RT_PRIO=100. lower the prio, higher the priority
+* Default user level task has 120 priority
+* User cannot make task more imp than others, can make some task less imp by adding a nice number(1 to 19) to 120
+* Super user can decrease task imp by adding -ve nice num(1 to 20), but still cannot achieve kernel level privs.
+
+sched_info
+* Fields-
+    ulong pcount :Number of times we have run on this cpu
+    ulong long run_delay : time spent waiting in run_queue(stores all taks with status TASK_RUNNING)
+    ulong long last_arrival : When did we last run on a cpu?
+    ulong long last_queued :
+
+mem_mngmnt
+* struct maple_tree mm_t - stores all VM regions
+* ulong task size - size of vm space
+* int map_count - number of VM regions
+* pgd_t* pgd - pointer to page table
+* stats : total_vm, locked_vm, pinned_vm
+* start_code,end_code;start_data,end_data,start_stack... : start, end of mem regions
+* struct task_struct* owner
+* ulong cpu_bitmap - cpus the process has been executed on
+
+* locked pages- cannot be swapped out of phys mem unless there is a system emergency.
+* pinned - kernel cannot change the phys loc of these pages. Can directly access mem using phys addr. Also reduces TLB misses as most mappings don't change.
+
+* maple tree has (start,end) of range as key
+
+vm_area_struct
+* Represents a contiguous mem region.
+* stores start and end addr of the vm region
+* Contains a ptr to parent mm_struct
+* List of all non-anon vm regions(copies of chunks of data stored in files) as a doubly linked list
+* vmfile* - to support mem mapped files(Contents of file mapped to vm region, changes in vm regions should reflect in file.)
+
+anon vm regions - eg. stack and heap. These are not copied from a file. Created during execution of process and cont dyn allocated data. Complex ds of linked lists to store them.
+
+PID
+* pid_t resolves to unsigned int on most archs.
+* struct pid stores pid rel info even after process has become a zombie.
+* pid rel tasks: how to quickly -
+    a. locate struct_pid given a pid - radix tree due to shared prefixes
+    b. find unallocated pid -
+    c. deallocate a pid
+    d. check if pid is allocated
+
+Containers
+* The env is not virtualised in containers. Processes within a conatiner perceive an isol env. A cont has its own processes, network stack and fs. Ensure that cont and remote sys cannot interfere with each other beyond a point
+* Every container is assigned a sep namespace.
+* create custom fs, mount it to docker and distr a docker container instead of reinstalling software and config the sys every time.
+*Processes retain their pid nums,inter-process communic structs after migration
+
+Namespaces
+* Namespaces are arranged in a tree
+* Every process visible to its own namespace and all ancestral namespaces. No process visible to its child namespace.
+* Sys may allocate few resources to a namespace which then must partition these aming child namespaces.
+
+struct pid_namespace
+* Fields-
+    a. idr tree - radix tree to store allocated struct_pid s
+    b. cache of pid structures - pool
+    c. level of namespace
+    d. pointer to parent namespace
+
+* Pool - Need a fast mechanism to allocate and deallocate memory(in this case struct pids). malloc() and free() are too expensive - they require a dedicated heap manager. Better mech - a pre-allocated set of resources of the same type in a 1d array. allocating = fetching from pool, freeing = returning to pool. If pool becomes empty, it indicates either a memory leak or that the initial estimate of required resources was insufficient. Can configure pool to automatically increase pool size upto a certain extent.
+
+struct_pid
+* Fields -
+    a. count - of resources
+    b. level - of namespace
+    c. tasks(linked list) - tasks[PIDTYPE_TGID(or PGID or SGID)]
+    d. array of upids(one per level) - upid=(pid number, pointer to namespace) - need to store both because a pid is defined only in the context of a namespace.
+
+Process group - set of processes started by the same terminal command
+Session group - set of processes started by the same session. Collection of process groups form a session.
+
+IDR tree
+* IDR = Radix tree(to quickly access struct_pid associated with a pid) + augmented tree(to quickly find first unallocated pid)
+* Node is of type xa_node, of 64 bits. Have a dedicated hardware instruction in x86 - bsf(bit scan forward) which finds the first 1 in a bit vec in 2-3 cycles.
+* Each node points to another xa_node or a struct_pid(stored at leaves)
+* Bit vector for pids stores whether a the pid is free(1) or not(0). Bit vector is not stored at once place but in a distributed manner at the 2nd last level.
+* Standard augmented tree changes to IDR tree when a pid is allocated or deallocated.
+
+* Allocating a pid -
+    1. invoke alloc_pid()
+    2. find free struct_pid from pool
+    3. Find smallest avail pid from IDR tree in current namespace, add mapping.
+    4. Do step 3 for all ancestral namespaces.
+
+
+File system,IO and Debugging
+* File is a contiguous set of bytes on a storage device
+* Different file sys created as per req - random/seq access, read patterns etc. fs coupled with storage device.
+* Linux assumed block storage devices
+
+Rem fields in task_struct(ptr to)-
+* file system
+* list of open files
+* list of registered signal handlers
+* info about block devices
+* info about i/o context
+
+Ptrace mech
+* ptrace field in task_struct - flages decided what sort of tracing is allowed
+* In an event of interest, the traced program stops and a SIGTRAP signal is sent to the tracing process.
+* Need to pay attention to the syscalls of the traced process. Tracing process can monitor the syscalls and change their args - either to generate specific behaviour between traced process and kernel or create inoccuous syscalls to minimise chance of damage to sys
+
+Process Creation and Destruction
+* The system boots by calling start_kernel() After booting, the booting process becomes the idle process - with pid=0. Spawns the init process - parent of all user processes(forever user,pid=0) and kthreadd - parent of all kernel processes(forever kernel,pid=2)
+
+Fork()
+* Copies the whole mem map and register state. Child and parent inherit the same mem and execution state, the child thus returns from the fork call even though it did not invoke it in the first place. They are only distinguished once they return from the call - child gets pid=0, parents retains orginal
+* Share physical frames unless one of them writes to a var.
+* Copy on write mech - major optimising factor of fork mech -
+    a. Child may choose to execute another binary altogether - no use of copying
+    b. They may not write to a large part of the mem map such as code and data sections
+    c. Distributes overheads across a long time - gets amortised.
+* In copy on write, the new entry is created at page/frame level - changes needed in TLB and page table of writer.
+* How to track page access for CoW? 2 bits needed - READONLY and P2. Mark all bits as read only. Fault generated - check P2 bit to see it process was truly read only
+
+syscall.h
+* clone() syscall for create new thread within a thread group - allows to decide which memo regions have to be shared.
+* vfork() syscall if child immediately executes new binary by using execv() syscall - no need to fully copy page tables of the parent
+* When forking a multithreaded process, only the calling thread is forked.
+Underneath, all of them call the copy_process(pid) func
+ which does 3 things
+    a. Duplicate current task_struct
+    b. Copy info about network, i/o and open files
+    c. Create external connections
+
+exec() family
+format:
+    char * argv [2] = {"pwd ",NULL };
+    execv ( PWDPATH , argv ) ;
+
+* Load start state of new binary to in process's mem map - code and data sections, but not stack and heap. File and network connections are preserved.
+
+Types of threads
+* Kernel threads, i/o threads, user threads
+* Need to ensure that data written in kernel mode is not accessible when thread returns to user mode - separate kernel stack and separte kernel VA space.
+* Thread in kernel avatar can access both user and kernel's VA spaces.
+* User stack not accessible in kernel mode.
+* 'user threads' are just user level entities to manage a user process. Kernel just perceives a single process p which if suspended, all its user threads will be suspended alongside
+* i/o threads- low priority threads - can be run in both kernel and user space
+* PF_KTHREAD set in task_struct.flags if thread is a kernel thread. kthread_create() and kthread_clone().
+
+Context Switching
+
+Hardware Context
+* Includes all gpr, some privileged registers(like cr3), rip, alu and fp registers(like flags),segment registers
+* TLB is flushed since new process will have new virt mem map - correct but suboptimal.
+* Instead, append pid to each tlb entry, generate fault if process tries to access entry which is not its own. Breaks abstraction - hw should not be aware of sw level structures.
+
+Software Context
+* Includes page table, open files and network connections, resource usage
+* All kernel threads have the same VA space. thus, kernel portion of page table will also be common to all processes and does not change on context switch.
+
+Types of Context switches - Process, thread, interrupt
+
+Process context switch
+1. kernel->kernel -same VA space, no need to flush tlb.
+2. kernel->user - same user: change mode,no need to flush tlb if pid appended in each entry
+3. user->kernel - change mode,no need to flush tlb
+The hw does a minimal amount of context saving(a fraction of hw context). Job of kernel thread(after transition) is to continue saving hw context. Kernel stack used to spill the contents of gpr etc.
+4. user->user = user->kernel + kernel-> user
+
+Thread Context switch
+* All threads must share the same complete VA space. Assign diff sp for each thread. Stacks stored contig, adjust spacing to prevent overflow. Set sp for each thread to starting addr of stack. No need to freq change contents of cr3 register(i.e change the page table) - thus prevents tlb flushing(in x86, changing cr3 typically flushes the tlb as well)
+* Still need to store and restore reg state - gprs, privileged, pc , alu flags etc
+* change current to task_struct of new thread.
+
+Interrupt context switch
+* Lots of restrictions-
+    a. limited code size
+    b. need to access native hardware
+    c. indep of user threads
+    d. not allowed to use locks
+* Same trick of user->kernel mode used but IH stacks used
+
+Details-
+* All syscalls begin with entry_syscall_64 func - written in assembly lang to access individual registers.
+* Interrupts disabled while saving context.
+1.  syscall : hw stores rip:rcx,flags:r11. Before syscall, assumed that rcx,r11 do not contain useful data
+    interruot: hw stores rip,flags and cs in kernel stack of current process
+
+--Transition to kernel mode--
+
+2. sw takes over.
+    swapgs instr - It swaps the value of the GS base register (MSR_GS_BASE) with Kernel GS Base MSR (MSR_KERNEL_GS_BASE). Invoke on kernel entry and kernel exit.
+3. If we were to store RSP on the kernel stack, we would first need to switch to that kernel stack.
+But switching RSP before saving it would lose the old stack pointer!
+This creates a chicken-and-egg problem—where do you store RSP before you modify it?
+rsp thus stored in TSS(task state register)
+4. rsp pointed to top of kernel stack
+5. Rest of the state is pushed to kernel stack - ds reg, sp(get spp from tss), r11(flags), rcx(pc), cs reg(for interrupts), rems gprs.
+
+Return
+sysret transfers back r11 to flags, rcx to rip.
+iret restores r11, flags, cs
+--Transition from kernel to user mode--
+
+Threads : Additional context - Since size of kernel stack is limited, we have threads_struct which stores TLS regions(starting addr,size of each), sp, seg regs, i/o permissions, state of fp unit
+
+Kernel code for context switch
+* After saving context(and trans to kernel mode ofc), exit_to_user_mode_loop checks for high prior processs. Select task to run next and effect context switch(using schedule()).
+* context_switch(run_queue, prev_task,next_task) invoked:
+    a. Prepare context switch process
+    b. init arch state, x86 does basic sanity checks
+    c. manage mm_structs for prev and next tasks
+    d. switch reg state and stack - restore in order:
+        thread_struct,seg regs other than cs, current task ptr
+    e. finish process.
+        Update the process states of prev and next, update timing info
+
+Managing the mm_structs
+* Two types of kernel threads - user->kernel and pure kernel.
+* For user->kernel, mm and active_mm are same.
+* For pure kernel, mm is NULL and active_mm is mm of last user process(This is a perf feature, in case there is need to access the mem of the last user process, it should be possible to do so as its entries might still exist in TLB).
+
+* If next thread is kernel thread(!next->mm), then set next->active_mm = prev->active_mm.
+if prev was a user thread (prev->mm), then incr its ref count, else if it was a kernel thread, set prev->active_mm = NULL, since that info is not needed anymore. No need to flush TLB
+
+* If next thread is a user thread(nexr->mm), check if it is the same as the last executed user thread(compare prev->active_mm and next->mm), in that case no need to flush TLB. prev->active_mm=NULL(no need to maintain it now).
+
+* Kernel can take up only 1Gb on 32-bit systems. If more is needed, temp map some pages to kernel mem and unmap when ret to user mode.
+
+* likely and unlikely to guide branch predictors
+
+* latent_entropy : directive to use value of task_struct* as a random number

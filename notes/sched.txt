@@ -1,0 +1,304 @@
+Doubts
+------
+* How exactly is unsafe state being detected in Banker's algorithm?
+    
+* "After the schedule function returns, we update the status of worker threads (sched update worker). This function performs simple bookkeeping. For example, if a worker thread is selected to run on the CPU, then this function helps the scheduler account for the fact that it is doing work related to workqueues. Its fairness policies use this information."
+Significance? How is this info being used?
+
+*"There is some degree of fairness within a class; however, it is the job of the user to ensure that there is a notion of fairness across classes (system-wide)." Why the burden on the user?
+
+* Implication of one cgroup being the parent of another cgroup?
+
+* What notion of fairness is provided by vruntime?
+
+* "This means that if we change the y-axis of Figure 5.30, then we are effectively still doing round-robin scheduling. Instead of using physical time, we are using the vruntime." What exactly is being represented in Fig 5.30?
+
+* Are all tasks being migrated to another cpu expected to have a low vruntime? What about tasks being migrated from heavily loaded cpus?
+
+* How is it ensured that all vruntimes monotonically increase? What about numeric limits?
+
+* When we migrate a task from core 0 to core 1, we do-
+se->vruntime - core0.cfs_rq->min_vruntime + core1.cfs_rq->min_vruntime?
+
+* Any specific choice for the decaying parameter?
+
+* Logic for utility in EDF scheduling for schedulability of real time tasks?
+
+* In what sort of jobs does it makes sense for d_i to be greater than P_i?(DMS scheduling)
+
+* If I(t) is increasing in t, then how does second chance system in dms scheduling work?
+
+* Give examples where PIP protocol suffers from deadlocks and chain blocking.
+
+*  (if avlbl ≺ req) - why the strict bound in line 8 in Banker Alg2
+
+* Difference between resource blocking and prio inversion?
+
+----------
+Notes
+* Task is a process that owns reseources, can get swapped out. Job is a schedulable entity. Task can spawn multiple jobs.
+
+* Makespan - Time required to finish all jobs(last job)
+
+* Preemption not allowed => less flexibility => Generally NP complete
+
+* KSW model - alpha|beta|gamma
+alpha = machine env - number of jobs, running time of each job, ncores
+beta = constraints - premption allowed, arrival times known, dependencies
+gamma = optimality criterion
+
+* Single Core Scheduling
+a. 1||Sum(C_j) - Shortes Job First(SJF)
+b. 1||Sum(w*C_j) - Dec order of w_i/p_i
+c. 1|r_i,dl_i,pmtn|L_max - Earliest Deadline First(EDF) (Latestness = Completion time - deadline)
+d. 1|r_i,pmtn|Sum(C_i) - Shortest Remaining Time First(SRTF)
+
+* For opt crit Sum(C_i) or L_max, pmtn has no effect if all jobs arrive at t=0.
+
+* NP complete problems - 
+a. 1|r_i|Sum(C_i)
+b. 1|r_i|L_max
+c. 1|r_i,pmtn|Sum(w_i*C_i) - Weighted causes NP completeness here.
+
+* Practical problem - Estimate job completion time. Time series analysis gives good results due to temporal locality.
+
+* Convoy effect - Long running job delays many smaller jobs. 
+* Tradeoff b/w priority and fairness
+
+Queue based sched - 
+* Multilevel feedback queue - Diff queues have diff prios. First sched jobs in highest prio queue. If empty cores left, move to next highest prio qqueue and so on. If a task stays in a high prio queue for too long, moved to low prio queue. To provide fairness, low prio jobs can be moved to high prio queues. Eacg queue can be sched using indep algo.
+
+Multicore Sched -
+* Obj - Makespan(C_max)
+* Again pmpt makes life easier.
+* P|pmtn|C_max - C_max == Sum(C_i)/P? - Evenly divide work b/w cores/
+* P||C_max - NP complete
+
+List Sched - 
+* Non-pmtn sched algo
+* Sort jobs in dec order of some prio scheme. Pick highest prio job to execute, if that is not possible, pick next in line and so on. 
+* No deliberate idling
+* For P||C_max, with m cpu cores, list sched gives the bound - 
+C_max/C* <= (2-1/m) : indep of how we assign prios as long as there is no deliberate waiting.
+* Longest PT sched - C_max/C* <= 4/3 - 1/3m
+
+Banker's Algo
+* Sched with deadlock avoidance
+
+* Uses general form of lockdep mech where multiple copies of a resource are allowed.
+
+* For 1 resource of each type, finding circ wait is enough. But for multiple copies of resource, circ wait not well defined.
+
+* Eg. Suppose 2 copies each of resource A and B. 
+P1 has locked a unit of both A,B. 
+P2 has a unit of A, waits for B
+P3 has a unit of B, waits for A.
+Deadlock b/w P2 and P3 breaks when P1 releases resources.
+
+* avlbl[m] - avlbl[i] = no. of free copies of res i.
+max[n][m] - process i can request for atmost max[i][j] copies of res j
+acq[n][m] - ...
+need[n][m] - quota left (acq + need = max)
+
+* Alg1 - Checks if state is safe conserv. safe = if every process were to demand the max number of resources it is entitled to, then it is still possible to satisfy all of them.
+* Alg2 - Check if req[i] <= need[i], if so, check if avlbl[i] < req[i], wait for res, may be released in future. Now suppose they avail, check for safety using Alg1.
+* Alg3 - First remove all procs that have not acq any res, they can't be a part of a deadlock. Now sim to Alg1, but replace (need with acq) and (safety with deadlock).
+--------------------
+Sched in Linux Kernel
+* entry point - schedule()
+    - Dispatch work to kernel threads(finsih pendinf work for curr proc, kworker threads for low prio work, i/o)
+    - Schedule with pmtn disabled
+    - Update status of worker threads(eg. let the sched know that it is doing work related to workqueues, info used for fairness)
+
+* When is schedule() called?
+a. A task is being put to sleep after failing to acq mutex(blocking call)
+b. Process returns after interrupt or syscall, kernel checks TIF_NEED_RESCHED flag.
+c. Timer interrupt(only when curr task has exceeded its slice)
+
+* runqueue(struct rq) - manages all task_structs for a cpu.  many schedulers avail,each  has its own rq. __schedule() is a wrapper for diff sched specific funcs.
+
+Sched classes
+* Pending job in higher sched class sched first.
+* Some fairness within a class but no fairness across classes
+
+* Classes-
+a. Stop task - stops everything else and executes. Eg. kernel panic, new cpu added.
+b. DL - Deadline
+c. RT - Regular (FIFO, Round Robin used)
+d. Fair - deafult
+e. Idle - runs when nothing else does, puts cpu in low power state.
+
+* Scheduler defined by struct sched_class object. Defines generic func pointers - ooo approx in c. struct rq is an arg for any such func.
+Eg. enqueue_task, dequeue_task, pick_task(fast path), pick_next_task(slow path), migrate_task_rq, update_curr.
+
+* Control groups(cgroups) - Procs sharing the same sched resources. Fairness across procs and cgroups. can have parent-child relation b/w cgroups.
+
+* Runqueue
+a. Protected by monitor lock(single lock protecting all opers on a ds)
+b.  
+- basic cpu stats, 
+- one runq for each sched class - cfs_rq, rt_rq, dl_rq
+- ptrs to curr_task, idle_task and mm_struct
+- ptr to task sel for running
+
+* Sched related info in task_struct
+- entities : sched_entity  , sched_rt_entity, sched_dl_entity
+(store runqueue and stats(start time, cumul exec time, vruntime, n_migrations))
+- prefer cpu : rb_node core_node
+(for NUMA machines)
+- Set of tasks that can safely exec on the same core : core cookie
+(some task may use arch side channel attacks to steal data)
+
+
+Completelt Fair Scheduling(CFS)
+* struct sched_entity
+- load weight (for load balancing)
+- stats
+- cfs_rq
+
+* vruntime: 
+    delta_v = delta * weight(nice=0)/weight(nice)
+    weight(nice=0) = 1024
+    weight(nice=n) ~= 1024/(1.25)^n
+
+* Beyond vruntime - stricter notion of fairness - give every process a chance to run atleast once during a sched period.
+
+    - SP = sched period in which all tasks run atleast once
+    - N = max no. of runnable tasks that can be considered in one SP
+    - G(granularity) = min time that a task runs in a sched period
+
+    1. Set SP 
+         if unlikely(nr_running>N) 
+            sp = G*nr_running(min run time for each task), 
+         else sp = SP
+    2. Set sched slice for each task
+            nr_running > N, then each slice is G, otherwise
+            slice_i = SP * weight(task_i)/Sum(weight(task_j))
+
+Main algo-
+Find task with least vruntime using rb_tree.
+Let it run till its sched slice is over.
+Now, if more than one task in cfs_rq, invoke scheduler
+
+If prios are equal, then equiv to RR scheduling.
+If prios are diff- 
+    slice ∝ weight(T)
+    delta_v ∝ slice/weight(T)
+    delta_v = constant
+    i.e RR sched with vruntime instead of physical time.
+
+How to prevent procs from gaming the scheduler?
+Possible offenders(tasks with small vruntime) - 
+- new tasks
+- tasks waking up after a long sleep
+- tasks getting migrated to another core(vruntime is core specific).
+- Tasks moving from heavily to lightly loaded cpu?
+
+Safeguards
+- cfs_rq has a min_vruntime.
+- if new task added or old task added after long duration : 
+    se->vruntime += cfs_rq->min_vruntime
+- Ensure that vruntimes are monot incr
+- Child process inherits vruntime fo parent
+- On task migration, 
+    se->vruntime = se->vrutime - cur_core->cfs_rq->min_vruntime + new_core->cfs_rq->min_vruntime (i.e vruntime is core specific)
+- Treat a cgroup as a single schedulable entity - cannot monopolize by spawning new processes within cgroup
+
+Calculating CPU load
+- Necessary for task migration decisions
+- Give more weightage to recent activity
+- u_i = fraction of time in p_i in which the task executed
+    load_avg = u0 + u1*y + u2*y^2 + ...
+Sum loads for all procs on a cpu.
+
+Deadline Scheduler-rb_tree to select task with earliest deadline, use EDF
+RT Scheduler-one queue for every rt prio. No mech to balance load across rt prios. For tasks with same rt prio, can use FIFO or RR for fairness.
+
+RT systems
+* Linux rt not used for mission critical systems as it does not provide many guarantees.
+* Types of RT systems
+a.Soft RT systems - Utility is non-zero even if deadline is missed, gen a dec func of lateness
+b.Firm RT - Utility is zero after deadline, but does not lead to system failure
+c.Hard RT - Deadline missed can lead to system failure.
+* In RT systems, the set of tasks is known before and well charact. Taks gen periodic with deadline=period.
+ALgos-
+EDF,RMS,DMS,PIP,HLP,PCP
+
+* EDF
+- Periodic tasks, deadline=period
+- pmtn enabled
+- Diff jobs spawned by a task can have diff prios
+- Minimize L_max
+- utility = Sum(d_i/P_i) (d=duration,P=period)
+- If utility <=1, then EDF gives opt, otherwise no algo can give opt schedule
+
+* RMS(Rate Monotonic Scheduling)
+- Periodic tasks, deadline=period
+- pmtn enabled
+- task prio = job prio, inv prop to period
+- Liu Layland bound
+    - For n periodic tasks, if U <= n*(2^(1/n)-1), then the set is schedulable.
+    - When n=2, U = U_max,if n->inf, U = ln2
+    - Worst case occurs when all tasks are in phase.
+    - Conservative bound, can do better
+
+- Lehoczky's Test
+    - Check if each task is meeting its deadline in worst case
+    - If U > LL bound, may still be sched using Lehoczky's test
+    - Sort jobs in dec order of prio
+    -   W_i(t) = Sum(j=1 to i)(d_j*ceil(t/P_j))
+        Q_i(t) = W_i(t)/t : Mean load of first i tasks over time t)
+        Q_i = min(0<t<=P_i) Q_i(t) : If Q_i<=1, then the ith task is sched
+        Q = max(1<=i<=n) Q_i
+        if Q<=1, then all tasks are sched.
+
+* DMS(Deadline Monotonic Scheduling)
+- Period tasks, deadline < period allowed
+- pmtn enabled
+- task prio = job prio, inv prop to period
+- Need I_i + d_i <= D_i (I = Interference in task exec)
+- Jobs sorted in dec order of prio
+- I_i(t) = Sum(j=1 to i-1) ceil(t/P_j)*d_j
+- For task tau_i
+    t = time to execute each of task 1 to i exactly once {Sum(j=1 to i)d_j}
+    cont = true
+    while(cont)
+        if t>D_i return false (Not schedulable)
+        if I_i(t) + d_i <=t 
+            cont = false    (Schedulable, stop iterating)
+        else t = I_i(t) + d_i (Give another chance)
+
+- Priority inversion - Low prio task holding a resource stops a high prio task wanting to acq the same res from making progress. 
+- Bounded prio inversion - low prio task will release res after some time => limited waiting
+- Unbounded prio inversion - If the low prio task holding a res, gets pmpted by a med prio task, then it ends up blocking the high prio task. High prio task can be delayed indefinitely
+- Second blocking - If after acq a res, a task gets blocked trying to aquire the next res
+
+* PIP(Priority Inheritance Protocol)
+- Raise prio of res holding task temp, even if it was low prio. Prio reverts after contended res is released.
+- Solves unbounded prio inversion
+- Suffers from deadlocks and second blocking
+
+
+* Resource blocking - Blocked by task holding the resource
+* Inheritance blocking - Current task cannot exec on CPU because others tasks have boosted their prios. If low prio=5 tasks gets boosted to 25, all high prio tasks from 6 to 24 suffer.
+
+* HLP(Highest Locker Protocol)
+- Suppose that the resources that a task may aquire are already known
+- ceil(resource) = prio of highest prio task that covets the resource
+- Algo - When a task acqs a res, raise its prio to ceil(res) + 1.
+- Features:
+    - No unbouned prio inv (obv)
+    - **No resource blocking
+    - implies no deadlocks, no second blocking (actually same thing, no chain blocking => no deadlocks)
+    - Suffers from inheritance blocking
+    
+* PCP(Priority Celing Protocol)
+- Sometimes, will not alloc res to a task, even if its is free.
+- CSC(Current System Ceiling) = max of ceils of all resources acq by some task in the system
+- Resource Grant Clause: 
+    Task T can acq res R only if one of the foll hold-
+        1. Orig prio of T > CSC
+        2. T hold the resource that set the current CSC
+- Inheritance clause - PIP
+- critical resource = res that set CSC
+

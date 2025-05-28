@@ -1,0 +1,162 @@
+* library call encapsulates syscall - prepares args, sets up env, makes syscall, processes results
+
+* for making syscall , pass no.in rax reg, additional args supplied in 6 other regs, need stack for even more args - much slower than regs
+
+* After ret from syscall, kernel may choose to sched a diff process from before. Start by checking TIF_NEED_RESCHED bits in thread_info, this flag is set if sched feels that current task has run for a long time. Sometimes, threads can deliberately set it. Again, sched may choose to or not to preempt this.
+
+* fs points to TLS, gs points to per-cpu storage.
+* Value of cs reg to be set automatically inferred from ring level.
+
+* See Fig 4.2 and 4.3, 4.4
+
+APIC = i/o APIC + LAPIC
+
+* many to many mapping between IRQ lines and interrupt vec generated.
+multiple IRQ lines -> single vector(Eg. multiple timer IRQs generate the same interrupt vec)
+single IRQ line -> multiple vectors
+
+* i/o APIC dispatches interrupts to LAPICS.
+* LAPIC's job is to generate interrupt vecs and send them to cpu. Can also receive IPI from another LAPIC. This allows one kernel thread to execute control over all cpus - needed when some task in running on cpu1 and the kernel decides to preempt it to cpu2.
+* Timer chip housed inside LAPIC. Thus each LAPIC generates timer interrupt for its own core(generally)
+* Interrupts generally not lost, unless the buffer in APIC overflows.
+* Disabling(during context switch) and masking of interrupts.
+* In addition to IRQ line being raised, can also write some args to APIC's registers
+* Lower the IRQ number, higher the priority. timer chip has IRQ val 0.
+
+Interrupt distribution
+* Static - A specific cpu or cpus are assigned specific interrupts to process. Can also generate one-shot timer interrupts
+* Dynamic - Eg. Send the interrupt to idle core or core running task with least prior. This reqs hw support. Intel machines have task priority register, its value is read by i/o apic.
+
+* Modern kernels prefer high res timers since their freq can be dynamic confug acc to task being executed.
+
+* Interrupt vec ranges -
+    0-19 - NMI
+    20-32 - Res by intel
+    32-127 - external interrupts
+    128 - syscalls
+    238 - lapic timer count
+    251 - 253 - IPIs
+
+* Often, different devices share same IRQ(due to lim no. of IRQs). To find which device generated the IRQ, the kernel runs IHs corresp to each of the devices sharing that IRQ. These handlers query the devices or check interrupt data to find the device that raised the interrupt.
+
+* Depending on nature of interrupt/except, ra can be pc(page fault),pc+4 or branch.
+
+Kernel code for interrupt descriptors
+
+struct irq_desc
+* Fields -
+    cpu affinity info
+    specific info for msi(message siganlled) interrupts
+    irq_data : interrupt vec(0 to 255)
+    flow handler - not an IH, communicates with device
+    ++ irq_action : linked with IRQ, points to IH
+
+* IH is generally implemented in the device driver.
+
+struct irq_action - nodes in a linked list
+* Fields -
+    IRQ
+    irq_handler,
+    next node,
+    device id - associated device
+    (task struct and irq_handler : for spawning bottom level kernel thread)
+
+IRQ domins
+* Similar to namespaces
+* irq relevant in domain only
+* Need to quickly recover irq_desc for a given irq quickly.
+* If <256 IRQS, uses linked list, otherwise uses radix tree.
+* i/o apic domains at leaf level, lapics closest to root. irqs get more virtualised at every level towards root.
+* In IDR tree, child accesses resources that parent owns. In this case,, interrupt flows from child to parent.
+
+IDT and APIC initialisation
+* bare bones IDT initialised by BIOS - needs a nanokernel
+* once the kernel boots, it rewrites it with its own entries.
+* IHs are locked and pinned in physical memory.
+* Each entry in IDT is (cs reg, offset in seg).
+* IDT like page table is a sw data structure which is walked in hw
+* idtr reg stores bases addr of IDT like cr3 does for page table.
+* After kernel boots, first
+    1. sets up a basic IDT,
+    2. probes default PCI devices(that are necessary for basic functioning such as graphics card or network card) to init an array of irq_desc structs.
+    3. Set up per cpu stacks
+    4. Init apics.
+
+Setting up lapics
+* Intel has msrs to interact with apics.
+    a. ldr(logic dest reg) - To address the processor(16(cluster id) + 16(proc id))
+    b. dfr(dest format reg) - clustering or not
+    c. tpr(task priority reg) - stores priority of task being executed on a given cpu
+* To initilaise lapic : init msrs, set timers to 0
+
+Setting up i/o apic
+* For every pin in i/o apic, probe the attached device and set up irq data structures for them
+* For each irq apic, create a new domain or register it with existing domain
+
+Interrupt Path
+* IDT table stored as an array, stored in per cpu region.
+Requirement : Set up irq data structutres
+Path :
+    1. Save context -> push interrupt vec to stack, access IDT
+    2. fetch the irq_desc from by using macro __this_cpu_read for IDT entry
+    3. call hadle_irq()
+
+IRQ Handler
+* handle_irq calls invoke diff funcs dep on whether interrupt is edge triggered or level triggered
+* Both ultimately call __handle_event_per_cpu(), its ret values are
+    NONE, HANDLED, WAKE_THREAD
+* call __handle_event_per_cpu() retrieves the irq number, iterates through all irq_actions and handles the interrupts :
+    desc = __this_cpu_read ( vector_irq [ vector ])
+    irq = desc -> irq_data.irq;
+    for_each_action_of_desc (desc , action )
+        res = action -> handler (irq , action -> dev_id ) ;
+
+* all irq handlers are func pointers - can point to generic IHs in kernel or spefic IH in device driver.
+
+Top and bottom halves
+* The IH that does the basic processing is the top half. These operate in a very restricted env due to their high priority - no locks,no preemption, limited stack size, access to user memory not allowed, cannot raise interrupt themselves,cannot perform large memory allocations, can't print data etc
+* Bottom half for deferred interrupt handling - fewer restrictions - can aquire locks, sync etc, can take long time to complete, interrupts are enabled.
+
+Exceptions
+* Also handled by IDT
+* Eg. breakpoint, double fault(exception that arises when processing another exception - should not have existed - bug in kernel code)
+* do_error_trap  - called in DEFINE_IDTENTRY - prelim processing of all exceptions, takes cpu regs as input with details of trap. In case of page fault, the VA resp for fault is autom stored in CR2 reg.
+
+Methods to handle exceptions-
+* Pass it to user process - Eg. debugging(breakpoints,watchpoints)
+* log message
+* kernel panic - eg. double fault => restart kernel
+* dynamic binary translation - eg. new cosine instruction
+* notify die - classic observer pattern in swe
+    There may be multiple processes interested in an exception. Each of them adds a callback func in a linked list associated with that exception. On an exception, these are processed in sequence. Ret values for each node - NOTIFY_DONE(irrelevant), NOTIFY_OK(succ handled,continue trav), NOTIFY_STOP(), NOTIFY_BAD.
+
+Softirqs
+* can't aquire locks, not meant to run for long durations
+* Types of context :
+    a. user context -
+    b. processor context - lowest prior kernel threads
+    c. interrupt context - interrupt top halves, no reg kernel thread gets to run until all threads in interrupt context have completed, maskable interrupts disbaled
+    d. softirq context - interrupts enabled, but no other softirq thread or kernel thread can preempt current softirq thread.
+
+* Can be invoked in 2 ways-
+    a. hard irqs raise a softirq, local_bh_enable()
+        Timeout to prevent cpu monopolisation
+    b. by regular kernel threads, process using ksoftirqd daemon.
+        the daemon operates in process context, calls do_softirq() in process context, thus any softirq task that it generates can be preempted by other kernel threads. Also processes softirq items gen by hard irqs if they are preempted by a timeout.
+
+* To rasie softirq, store word in per cpu region whose diff bits corresp to diff softirq types. If a bit is set, then a softirq request for that type is pending
+
+Threaded irqs
+* lower prior than top half or softirq tasks - real time prio=50.
+* Recall spinoff(task_struct,irq_handler) in irq_action : pointer to thread that executes task as threaded irq if needed.
+
+Work Queues
+* Generic mechanisms - low prior, can be used by device drivers, 3rd party code
+* See fig 4.8
+* Work queue is a linked list of worker_pool wrappers.
+    worker_pool =
+        threads pool,
+        small ll of work items - as per size of thread pool
+        inactive work items - special data structure,
+    wrapper is need to interecpt calls and manage the active and active lists
+* Worker pool gen associated with a cpu or a set of cpus
